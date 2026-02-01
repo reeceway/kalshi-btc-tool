@@ -24,7 +24,22 @@ import { computeMacd } from "./indicators/macd.js";
 import { computeHeikenAshi, countConsecutive } from "./indicators/heikenAshi.js";
 import * as fs from "fs";
 import * as https from "https";
+import * as http from "http";
 import * as crypto from "crypto";
+
+// ============================================
+// HTTP AGENTS WITH KEEP-ALIVE (SPEED OPTIMIZATION)
+// ============================================
+const httpsAgent = new https.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 30000,
+    maxSockets: 10
+});
+const httpAgent = new http.Agent({
+    keepAlive: true,
+    keepAliveMsecs: 30000,
+    maxSockets: 10
+});
 
 // ============================================
 // CONFIGURATION
@@ -125,7 +140,8 @@ async function placeOrder({ ticker, side, count, price }, retryCount = 0) {
             path,
             method: "POST",
             headers,
-            timeout: 10000  // 10 second timeout
+            agent: httpsAgent,  // Keep-alive for speed
+            timeout: 5000  // Reduced timeout for speed
         }, (res) => {
             let data = "";
             res.on("data", chunk => data += chunk);
@@ -194,7 +210,8 @@ async function fetchBalance() {
             path,
             method: "GET",
             headers,
-            timeout: 10000
+            agent: httpsAgent,  // Keep-alive for speed
+            timeout: 3000  // Fast timeout
         }, (res) => {
             let data = "";
             res.on("data", chunk => data += chunk);
@@ -346,13 +363,19 @@ async function runTrade() {
     notify("🔍 Fetching market data...");
 
     try {
-        // Fetch all data in parallel
-        const [spotData, ticker, candles, markets] = await Promise.all([
+        const startTime = Date.now();
+
+        // SPEED OPTIMIZATION: Fetch ALL data in parallel including balance
+        const [spotData, ticker, candles, markets, balance] = await Promise.all([
             fetchSpotPrice().catch(() => ({})),
             fetchTicker().catch(() => ({})),
             fetchCandles({ granularity: 60, limit: 30 }).catch(() => []),
-            fetchMarkets(CONFIG.kalshi.seriesTicker, "open").catch(() => [])
+            fetchMarkets(CONFIG.kalshi.seriesTicker, "open").catch(() => []),
+            fetchBalance().catch(() => null)  // Fetch balance in parallel!
         ]);
+
+        const fetchTime = Date.now() - startTime;
+        notify(`⚡ Data fetched in ${fetchTime}ms`);
 
         const currentPrice = spotData.price || ticker.price;
         if (!currentPrice) {
@@ -441,8 +464,7 @@ async function runTrade() {
             return;
         }
 
-        // Fetch portfolio balance and calculate position size
-        const balance = await fetchBalance();
+        // Balance already fetched in parallel above - check it's valid
         if (!balance) {
             notify("❌ Could not fetch portfolio balance. Skipping.");
             return;
