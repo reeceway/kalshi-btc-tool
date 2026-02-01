@@ -548,8 +548,8 @@ function startDaemon() {
     const delay = Math.round((next.getTime() - Date.now()) / 60000);
     notify(`⏳ Next run at ${next.toLocaleTimeString()} (in ${delay} min)`);
 
-    // Check every 10 seconds for reliable triggering
-    setInterval(checkAndRun, 10000);
+    // Check every 1 second for FASTEST triggering
+    setInterval(checkAndRun, 1000);
 
     // Also check immediately
     checkAndRun();
