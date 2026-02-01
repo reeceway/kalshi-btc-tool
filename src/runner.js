@@ -32,7 +32,7 @@ import * as crypto from "crypto";
 const TRADE_CONFIG = {
     contractCount: 10,           // Number of contracts per trade
     runAtMinute: 54,             // Run at :54 of each hour (6 min before settlement)
-    minConfidence: 55,           // Minimum confidence to trade (lowered for more trades)
+    minConfidence: 50,           // Minimum confidence to trade (lowered for testing)
     useMarketOrder: true,        // FIX #1: Use market orders for guaranteed fill
     maxRetries: 2,               // FIX #2: Retry failed API calls
     notifyWebhook: process.env.NOTIFY_WEBHOOK || null,
@@ -59,17 +59,24 @@ function getKalshiAuth() {
     }
 }
 
-function signRequest(method, path, body, auth) {
-    const timestamp = Math.floor(Date.now() / 1000);
-    const message = `${timestamp}${method}${path}${body || ""}`;
+function signRequest(method, path, auth) {
+    // Kalshi requires:
+    // 1. RSA-PSS with SHA256
+    // 2. Timestamp in MILLISECONDS
+    // 3. Message = timestamp + method + path (NO body)
+    const timestamp = Date.now();
+    const message = `${timestamp}${method}${path}`;
 
-    const sign = crypto.createSign("RSA-SHA256");
-    sign.update(message);
-    const signature = sign.sign(auth.privateKey, "base64");
+    // Use RSA-PSS with SHA256
+    const signature = crypto.sign("sha256", Buffer.from(message), {
+        key: auth.privateKey,
+        padding: crypto.constants.RSA_PKCS1_PSS_PADDING,
+        saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST
+    });
 
     return {
         "KALSHI-ACCESS-KEY": auth.keyId,
-        "KALSHI-ACCESS-SIGNATURE": signature,
+        "KALSHI-ACCESS-SIGNATURE": signature.toString("base64"),
         "KALSHI-ACCESS-TIMESTAMP": timestamp.toString()
     };
 }
@@ -85,37 +92,35 @@ async function placeOrder({ ticker, side, count, price }, retryCount = 0) {
 
     const path = "/trade-api/v2/portfolio/orders";
 
-    // FIX #1: Use market order for guaranteed fill
+    // Kalshi requires a price even for "market-like" orders
+    // Use limit order with aggressive price for fast fill
+    const aggressivePrice = Math.min(99, price + 3);  // Pay up to 3¢ more for guaranteed fill
+
     const orderBody = {
         ticker,
         side,           // "yes" or "no"
         action: "buy",
-        count
+        count,
+        type: "limit"
     };
 
-    if (TRADE_CONFIG.useMarketOrder) {
-        orderBody.type = "market";  // Market order - fills at best available price
+    // Must provide exactly one price field
+    if (side === "yes") {
+        orderBody.yes_price = aggressivePrice;
     } else {
-        orderBody.type = "limit";
-        // Add a buffer to limit price for better fill chance
-        const priceWithBuffer = Math.min(99, price + 2);
-        if (side === "yes") {
-            orderBody.yes_price = priceWithBuffer;
-        } else {
-            orderBody.no_price = priceWithBuffer;
-        }
+        orderBody.no_price = aggressivePrice;
     }
 
     const body = JSON.stringify(orderBody);
 
     const headers = {
-        ...signRequest("POST", path, body, auth),
+        ...signRequest("POST", path, auth),
         "Content-Type": "application/json"
     };
 
     return new Promise((resolve) => {
         const req = https.request({
-            hostname: "trading-api.kalshi.com",
+            hostname: "api.elections.kalshi.com",
             port: 443,
             path,
             method: "POST",
