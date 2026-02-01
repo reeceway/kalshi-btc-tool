@@ -50,6 +50,7 @@ const TRADE_CONFIG = {
     maxContracts: 100,           // Maximum contracts per trade
     runAtMinute: 54,             // Run at :54 of each hour (6 min before settlement)
     minConfidence: 55,           // Minimum confidence to trade
+    minEdge: 5,                  // Minimum edge vs market to trade (Our % - Market %)
     maxRetries: 2,               // Retry failed API calls
     notifyWebhook: process.env.NOTIFY_WEBHOOK || null,
     logFile: "./trades.log"
@@ -456,13 +457,30 @@ async function runTrade() {
             return;
         }
 
-        // Get the ask price for our side
+        // Get the ask price for our side (market's implied probability)
         const askPrice = prediction.side === "yes" ? bestMarket.yes_ask : bestMarket.no_ask;
 
         if (!askPrice || askPrice >= 95) {
             notify(`⚠️ Ask price too high or unavailable (${askPrice}¢). Skipping.`);
             return;
         }
+
+        // EDGE CALCULATION: Compare our prediction vs market price
+        // askPrice = market's implied probability (in cents = %)
+        // Our confidence = our calculated probability
+        // Edge = how much we disagree with the market
+        const marketProb = askPrice;  // 60¢ = market thinks 60% chance
+        const ourProb = prediction.confidence;
+        const edge = ourProb - marketProb;
+
+        notify(`📊 Market odds: ${marketProb}% | Our calc: ${ourProb}% | Edge: ${edge > 0 ? '+' : ''}${edge}%`);
+
+        if (edge < TRADE_CONFIG.minEdge) {
+            notify(`⚠️ Edge too low (${edge}% < ${TRADE_CONFIG.minEdge}%). Market already priced correctly. Skipping.`);
+            return;
+        }
+
+        notify(`✅ Found ${edge}% edge! Market underpriced.`);
 
         // Balance already fetched in parallel above - check it's valid
         if (!balance) {
