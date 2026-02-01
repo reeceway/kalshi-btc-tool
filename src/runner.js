@@ -527,15 +527,18 @@ function startDaemon() {
     notify(`💵 Position sizing: ${TRADE_CONFIG.positionSizePct}% of portfolio`);
     notify(`🎯 Min confidence: ${TRADE_CONFIG.minConfidence}%`);
 
-    // FIX #5: Check every minute instead of using long setTimeout
-    // This prevents timer drift and handles system sleep better
+    let lastRunHour = -1;  // Track last run to prevent double-runs
+
+    // Check every 10 seconds for reliable triggering
     const checkAndRun = async () => {
         const now = new Date();
+        const hour = now.getHours();
         const minute = now.getMinutes();
-        const second = now.getSeconds();
 
-        // Run if we're at the target minute (within first 5 seconds)
-        if (minute === TRADE_CONFIG.runAtMinute && second < 5) {
+        // Run if we're at the target minute and haven't run this hour yet
+        if (minute === TRADE_CONFIG.runAtMinute && lastRunHour !== hour) {
+            lastRunHour = hour;
+            notify(`⏰ Triggered at ${now.toLocaleTimeString()}`);
             await runTrade();
         }
     };
@@ -545,10 +548,10 @@ function startDaemon() {
     const delay = Math.round((next.getTime() - Date.now()) / 60000);
     notify(`⏳ Next run at ${next.toLocaleTimeString()} (in ${delay} min)`);
 
-    // Check every minute
-    setInterval(checkAndRun, 60000);
+    // Check every 10 seconds for reliable triggering
+    setInterval(checkAndRun, 10000);
 
-    // Also check immediately in case we started at the right minute
+    // Also check immediately
     checkAndRun();
 }
 
