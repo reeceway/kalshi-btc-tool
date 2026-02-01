@@ -45,13 +45,19 @@ const httpAgent = new http.Agent({
 // CONFIGURATION
 // ============================================
 const TRADE_CONFIG = {
-    positionSizePct: 10,         // Position size as % of portfolio (10% = safe)
+    positionSizePct: 10,         // Position size as % of portfolio
     minContracts: 1,             // Minimum contracts per trade
     maxContracts: 100,           // Maximum contracts per trade
     runAtMinute: 54,             // Run at :54 of each hour (6 min before settlement)
-    minConfidence: 55,           // Minimum confidence to trade
-    minEdge: 5,                  // Minimum edge vs market to trade (Our % - Market %)
-    maxRetries: 2,               // Retry failed API calls
+    minConfidence: 50,           // Minimum confidence to trade
+    minEdge: 0,                  // Minimum edge vs market (0 = trade if any edge)
+
+    // ACCURACY IMPROVEMENTS
+    coinFlipThreshold: 30,       // Skip if price within $X of strike (coin flip)
+    momentumPenalty: 10,         // Reduce confidence by X% if momentum against us
+    maxVolatility: 0.5,          // Skip if 5-min volatility > X% (0.5 = 0.5%)
+
+    maxRetries: 2,
     notifyWebhook: process.env.NOTIFY_WEBHOOK || null,
     logFile: "./trades.log"
 };
@@ -445,15 +451,55 @@ async function runTrade() {
         notify(`🎯 Prediction: BUY ${prediction.side.toUpperCase()} @ ${prediction.confidence}% confidence`);
         notify(`⏰ Market expires in ${expiresInMinutes} minutes`);
 
+        // ============================================
+        // ACCURACY IMPROVEMENT #1: Skip coin flips
+        // ============================================
+        const distanceFromStrike = Math.abs(currentPrice - strikePrice);
+        if (distanceFromStrike < TRADE_CONFIG.coinFlipThreshold) {
+            notify(`🎲 COIN FLIP: Price only $${distanceFromStrike.toFixed(0)} from strike (< $${TRADE_CONFIG.coinFlipThreshold}). Skipping.`);
+            return;
+        }
+
+        // ============================================
+        // ACCURACY IMPROVEMENT #2: Momentum check
+        // ============================================
+        let adjustedConfidence = prediction.confidence;
+        if (candles.length >= 3) {
+            const recentCloses = candles.slice(-3).map(c => c.close);
+            const momentum = recentCloses[2] - recentCloses[0];  // Last 3 min movement
+            const movingTowardStrike = (prediction.isAboveStrike && momentum < 0) ||
+                (!prediction.isAboveStrike && momentum > 0);
+
+            if (movingTowardStrike) {
+                adjustedConfidence -= TRADE_CONFIG.momentumPenalty;
+                notify(`⚠️ Momentum against us! Confidence adjusted: ${prediction.confidence}% → ${adjustedConfidence}%`);
+            }
+        }
+
+        // ============================================
+        // ACCURACY IMPROVEMENT #3: Volatility filter
+        // ============================================
+        if (candles.length >= 5) {
+            const recentCandles = candles.slice(-5);
+            const high = Math.max(...recentCandles.map(c => c.high));
+            const low = Math.min(...recentCandles.map(c => c.low));
+            const volatilityPct = ((high - low) / currentPrice) * 100;
+
+            if (volatilityPct > TRADE_CONFIG.maxVolatility) {
+                notify(`🌊 HIGH VOLATILITY: ${volatilityPct.toFixed(2)}% in last 5 min (> ${TRADE_CONFIG.maxVolatility}%). Skipping.`);
+                return;
+            }
+        }
+
         // Validate prediction makes sense
         if (!prediction.side) {
             notify("❌ Could not determine side. Skipping.");
             return;
         }
 
-        // Check minimum confidence
-        if (prediction.confidence < TRADE_CONFIG.minConfidence) {
-            notify(`⚠️ Confidence too low (${prediction.confidence}% < ${TRADE_CONFIG.minConfidence}%). Skipping.`);
+        // Check minimum confidence (using adjusted)
+        if (adjustedConfidence < TRADE_CONFIG.minConfidence) {
+            notify(`⚠️ Confidence too low (${adjustedConfidence}% < ${TRADE_CONFIG.minConfidence}%). Skipping.`);
             return;
         }
 
