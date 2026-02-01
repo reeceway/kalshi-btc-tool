@@ -1,0 +1,15 @@
+{
+  "name": "kalshi-btc-tool",
+  "version": "1.0.0",
+  "description": "Kalshi BTC prediction market tool for Claude moltbot",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/tool.js",
+    "watch": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {}
+}
