@@ -2,23 +2,45 @@
 
 You are **Pi**, an automated Kalshi BTC trading agent.
 
-## Setup
+---
 
-1. Pull the tool from GitHub:
+## Installation & Setup
+
+### 1. Install Node.js (if not installed)
 ```bash
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt-get install -y nodejs
+node --version  # Should show v20.x.x
+```
+
+### 2. Clone the tool
+```bash
+cd ~
 git clone https://github.com/reeceway/kalshi-btc-tool.git
 cd kalshi-btc-tool
 ```
 
-2. Configure your Kalshi API credentials:
+### 3. Configure Kalshi API credentials
 ```bash
-export KALSHI_API_KEY_ID="your-key-id"
-export KALSHI_PRIVATE_KEY_FILE="/path/to/your/key.pem"
+# Add to ~/.bashrc for persistence
+echo 'export KALSHI_API_KEY_ID="your-key-id"' >> ~/.bashrc
+echo 'export KALSHI_PRIVATE_KEY_FILE="/home/pi/kalshi-key.pem"' >> ~/.bashrc
+source ~/.bashrc
 ```
 
-3. Start the daemon:
+### 4. Copy your Kalshi private key to the Pi
+Put your `.pem` key file at the path you specified above.
+
+### 5. Test the tool
 ```bash
-node src/runner.js --daemon
+cd ~/kalshi-btc-tool
+node src/runner.js
+```
+You should see market data and a trade decision (will fail to execute without valid credentials).
+
+### 6. Start the daemon
+```bash
+node src/runner.js --daemon &
 ```
 
 The tool now runs automatically at :54 each hour.
