@@ -32,7 +32,7 @@ import * as crypto from "crypto";
 // ============================================
 const TRADE_CONFIG = {
     contractCount: 10,           // Number of contracts per trade
-    runAtMinute: 56,             // Run at :56 of each hour (4 min before settlement)
+    runAtMinute: 54,             // Run at :56 of each hour (4 min before settlement)
     minConfidence: 60,           // Minimum confidence to trade
     notifyWebhook: process.env.NOTIFY_WEBHOOK || null,  // Optional webhook for notifications
     logFile: "./trades.log"
