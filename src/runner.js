@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Kalshi BTC Auto-Trader
+ * Kalshi BTC Auto-Trader v2 - Fixed & Reliable
  * Runs on a schedule, places orders, notifies on fill
  * 
  * Usage:
@@ -19,7 +19,6 @@ import {
     parseExpiration,
     summarizeOrderBook
 } from "./data/kalshi.js";
-import { computeVwapSeries } from "./indicators/vwap.js";
 import { computeRsi } from "./indicators/rsi.js";
 import { computeMacd } from "./indicators/macd.js";
 import { computeHeikenAshi, countConsecutive } from "./indicators/heikenAshi.js";
@@ -32,9 +31,11 @@ import * as crypto from "crypto";
 // ============================================
 const TRADE_CONFIG = {
     contractCount: 10,           // Number of contracts per trade
-    runAtMinute: 54,             // Run at :56 of each hour (4 min before settlement)
-    minConfidence: 60,           // Minimum confidence to trade
-    notifyWebhook: process.env.NOTIFY_WEBHOOK || null,  // Optional webhook for notifications
+    runAtMinute: 54,             // Run at :54 of each hour (6 min before settlement)
+    minConfidence: 55,           // Minimum confidence to trade (lowered for more trades)
+    useMarketOrder: true,        // FIX #1: Use market orders for guaranteed fill
+    maxRetries: 2,               // FIX #2: Retry failed API calls
+    notifyWebhook: process.env.NOTIFY_WEBHOOK || null,
     logFile: "./trades.log"
 };
 
@@ -74,24 +75,38 @@ function signRequest(method, path, body, auth) {
 }
 
 // ============================================
-// KALSHI ORDER EXECUTION
+// KALSHI ORDER EXECUTION (FIXED)
 // ============================================
-async function placeOrder({ ticker, side, count, price }) {
+async function placeOrder({ ticker, side, count, price }, retryCount = 0) {
     const auth = getKalshiAuth();
     if (!auth) {
         return { success: false, error: "No Kalshi API credentials configured" };
     }
 
     const path = "/trade-api/v2/portfolio/orders";
-    const body = JSON.stringify({
+
+    // FIX #1: Use market order for guaranteed fill
+    const orderBody = {
         ticker,
         side,           // "yes" or "no"
         action: "buy",
-        type: "limit",
-        count,
-        yes_price: side === "yes" ? price : undefined,
-        no_price: side === "no" ? price : undefined
-    });
+        count
+    };
+
+    if (TRADE_CONFIG.useMarketOrder) {
+        orderBody.type = "market";  // Market order - fills at best available price
+    } else {
+        orderBody.type = "limit";
+        // Add a buffer to limit price for better fill chance
+        const priceWithBuffer = Math.min(99, price + 2);
+        if (side === "yes") {
+            orderBody.yes_price = priceWithBuffer;
+        } else {
+            orderBody.no_price = priceWithBuffer;
+        }
+    }
+
+    const body = JSON.stringify(orderBody);
 
     const headers = {
         ...signRequest("POST", path, body, auth),
@@ -104,17 +119,25 @@ async function placeOrder({ ticker, side, count, price }) {
             port: 443,
             path,
             method: "POST",
-            headers
+            headers,
+            timeout: 10000  // 10 second timeout
         }, (res) => {
             let data = "";
             res.on("data", chunk => data += chunk);
-            res.on("end", () => {
+            res.on("end", async () => {
                 try {
                     const json = JSON.parse(data);
                     if (res.statusCode === 200 || res.statusCode === 201) {
                         resolve({ success: true, order: json });
                     } else {
-                        resolve({ success: false, error: json.message || data });
+                        // FIX #2: Retry on failure
+                        if (retryCount < TRADE_CONFIG.maxRetries) {
+                            notify(`⚠️ Order failed, retrying (${retryCount + 1}/${TRADE_CONFIG.maxRetries})...`);
+                            await sleep(500);
+                            resolve(await placeOrder({ ticker, side, count, price }, retryCount + 1));
+                        } else {
+                            resolve({ success: false, error: json.message || data });
+                        }
                     }
                 } catch (e) {
                     resolve({ success: false, error: data });
@@ -122,13 +145,29 @@ async function placeOrder({ ticker, side, count, price }) {
             });
         });
 
-        req.on("error", (e) => {
-            resolve({ success: false, error: e.message });
+        req.on("error", async (e) => {
+            // FIX #2: Retry on network error
+            if (retryCount < TRADE_CONFIG.maxRetries) {
+                notify(`⚠️ Network error, retrying (${retryCount + 1}/${TRADE_CONFIG.maxRetries})...`);
+                await sleep(500);
+                resolve(await placeOrder({ ticker, side, count, price }, retryCount + 1));
+            } else {
+                resolve({ success: false, error: e.message });
+            }
+        });
+
+        req.on("timeout", () => {
+            req.destroy();
+            resolve({ success: false, error: "Request timeout" });
         });
 
         req.write(body);
         req.end();
     });
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ============================================
@@ -138,15 +177,12 @@ function notify(message) {
     const timestamp = new Date().toISOString();
     const logLine = `[${timestamp}] ${message}\n`;
 
-    // Log to console
     console.log(logLine);
 
-    // Log to file
     try {
         fs.appendFileSync(TRADE_CONFIG.logFile, logLine);
     } catch (e) { }
 
-    // Send webhook notification if configured
     if (TRADE_CONFIG.notifyWebhook) {
         const url = new URL(TRADE_CONFIG.notifyWebhook);
         const body = JSON.stringify({ text: message });
@@ -164,9 +200,9 @@ function notify(message) {
 }
 
 // ============================================
-// PREDICTION LOGIC (Time-Weighted)
+// PREDICTION LOGIC (FIXED - Clearer side determination)
 // ============================================
-function calculatePrediction({ currentPrice, strikePrice, ta, expiresInMinutes, orderbook }) {
+function calculatePrediction({ currentPrice, strikePrice, ta, expiresInMinutes }) {
     if (!currentPrice || !strikePrice) {
         return { side: null, confidence: 0, reason: "Missing data" };
     }
@@ -175,53 +211,70 @@ function calculatePrediction({ currentPrice, strikePrice, ta, expiresInMinutes, 
     const priceDistancePct = Math.abs(priceDistance / strikePrice) * 100;
     const isAboveStrike = priceDistance > 0;
 
-    // Time weighting
-    let taWeight, priceWeight;
+    // FIX #3: Clearer side logic
+    // If price is ABOVE strike -> YES wins (price will be above at settlement)
+    // If price is BELOW strike -> NO wins (price will NOT be above at settlement)
+
+    // Time weighting - closer to expiry = trust price position more
+    let priceWeight;
     if (expiresInMinutes <= 5) {
-        taWeight = 0.05; priceWeight = 0.95;
-    } else if (expiresInMinutes <= 15) {
-        taWeight = 0.20; priceWeight = 0.80;
-    } else if (expiresInMinutes <= 30) {
-        taWeight = 0.40; priceWeight = 0.60;
+        priceWeight = 0.95;
+    } else if (expiresInMinutes <= 10) {
+        priceWeight = 0.85;
+    } else if (expiresInMinutes <= 20) {
+        priceWeight = 0.70;
     } else {
-        taWeight = 0.60; priceWeight = 0.40;
+        priceWeight = 0.50;
+    }
+    const taWeight = 1 - priceWeight;
+
+    // Price position confidence (how far from strike)
+    let priceConfidence;
+    if (priceDistancePct >= 0.5) {
+        priceConfidence = 90;  // Very confident if 0.5%+ away
+    } else if (priceDistancePct >= 0.2) {
+        priceConfidence = 75;
+    } else if (priceDistancePct >= 0.1) {
+        priceConfidence = 60;
+    } else {
+        priceConfidence = 50;  // Too close to call
     }
 
-    // Price score
-    let priceScore = 50;
-    if (priceDistancePct > 0.5) priceScore = isAboveStrike ? 75 : 25;
-    if (priceDistancePct > 1.0) priceScore = isAboveStrike ? 85 : 15;
-    if (priceDistancePct > 2.0) priceScore = isAboveStrike ? 95 : 5;
+    // TA adjustment (minor influence)
+    let taAdjustment = 0;
+    if (ta?.prediction?.upProbability) {
+        const taUp = ta.prediction.upProbability;
+        if (isAboveStrike && taUp > 55) taAdjustment = 5;
+        if (isAboveStrike && taUp < 45) taAdjustment = -10;  // TA disagrees
+        if (!isAboveStrike && taUp < 45) taAdjustment = 5;
+        if (!isAboveStrike && taUp > 55) taAdjustment = -10;  // TA disagrees
+    }
 
-    // TA score
-    let taScore = ta?.prediction?.upProbability || 50;
-
-    // Momentum
-    let momentumAdj = 0;
+    // Momentum check - is price moving toward or away from strike?
+    let momentumAdjustment = 0;
     if (ta?.delta?.["1m"]) {
-        const delta1m = ta.delta["1m"];
-        if (isAboveStrike && delta1m < 0) momentumAdj = -5;
-        if (!isAboveStrike && delta1m > 0) momentumAdj = -5;
-        if (isAboveStrike && delta1m > 0) momentumAdj = 5;
-        if (!isAboveStrike && delta1m < 0) momentumAdj = 5;
+        const movingUp = ta.delta["1m"] > 0;
+        // Bad momentum = moving toward strike (could cross)
+        if (isAboveStrike && !movingUp) momentumAdjustment = -5;  // Above but falling
+        if (!isAboveStrike && movingUp) momentumAdjustment = -5;  // Below but rising
+        // Good momentum = moving away from strike
+        if (isAboveStrike && movingUp) momentumAdjustment = 3;
+        if (!isAboveStrike && !movingUp) momentumAdjustment = 3;
     }
 
-    // Volatility penalty
-    let volatilityPenalty = 0;
-    if (ta?.delta?.["5m"]) {
-        const absMove = Math.abs(ta.delta["5m"]);
-        if (absMove > 200) volatilityPenalty = 10;
-        if (absMove > 400) volatilityPenalty = 20;
-    }
+    // Final confidence
+    const baseConfidence = priceConfidence * priceWeight + 50 * taWeight;
+    const finalConfidence = Math.max(30, Math.min(95, baseConfidence + taAdjustment + momentumAdjustment));
 
-    // Combine
-    const combinedScore = (priceScore * priceWeight) + (taScore * taWeight) + momentumAdj;
-    const finalConfidence = Math.max(10, Math.min(95, combinedScore - volatilityPenalty));
+    // Determine side based on price position
+    const side = isAboveStrike ? "yes" : "no";
 
-    const side = finalConfidence > 50 ? "yes" : "no";
-    const confidence = side === "yes" ? finalConfidence : (100 - finalConfidence);
-
-    return { side, confidence: Math.round(confidence) };
+    return {
+        side,
+        confidence: Math.round(finalConfidence),
+        isAboveStrike,
+        priceDistancePct: priceDistancePct.toFixed(3)
+    };
 }
 
 // ============================================
@@ -231,11 +284,11 @@ async function runTrade() {
     notify("🔍 Fetching market data...");
 
     try {
-        // Fetch all data
+        // Fetch all data in parallel
         const [spotData, ticker, candles, markets] = await Promise.all([
             fetchSpotPrice().catch(() => ({})),
             fetchTicker().catch(() => ({})),
-            fetchCandles({ granularity: 60, limit: 60 }).catch(() => []),
+            fetchCandles({ granularity: 60, limit: 30 }).catch(() => []),
             fetchMarkets(CONFIG.kalshi.seriesTicker, "open").catch(() => [])
         ]);
 
@@ -245,12 +298,17 @@ async function runTrade() {
             return;
         }
 
-        // Find best market
+        // Find the next expiring event's markets
         const nextEventMarkets = getNextEventMarkets(markets);
-        const bestMarket = pickBestMarket(nextEventMarkets, currentPrice);
+        if (!nextEventMarkets || nextEventMarkets.length === 0) {
+            notify("❌ No markets available for next event");
+            return;
+        }
 
+        // Pick market closest to current price
+        const bestMarket = pickBestMarket(nextEventMarkets, currentPrice);
         if (!bestMarket) {
-            notify("❌ No market available");
+            notify("❌ No suitable market found near current price");
             return;
         }
 
@@ -258,12 +316,9 @@ async function runTrade() {
         const expiration = parseExpiration(bestMarket);
         const expiresInMinutes = expiration ? Math.round((expiration.getTime() - Date.now()) / 60000) : 999;
 
-        // Get orderbook
-        const orderbook = await fetchOrderBook(bestMarket.ticker).catch(() => null);
-
         // Calculate TA
         let ta = null;
-        if (candles.length > 0) {
+        if (candles.length > 10) {
             const closes = candles.map(c => c.close);
             const rsiNow = computeRsi(closes, 14);
             const macd = computeMacd(closes, 12, 26, 9);
@@ -274,15 +329,15 @@ async function runTrade() {
             const delta5m = closes.length >= 6 ? closes[closes.length - 1] - closes[closes.length - 6] : 0;
 
             let taUp = 50;
-            if (rsiNow > 60) taUp += 10;
-            if (rsiNow < 40) taUp -= 10;
-            if (macd?.hist > 0) taUp += 10;
-            if (macd?.hist < 0) taUp -= 10;
-            if (consec.color === "green") taUp += 5;
-            if (consec.color === "red") taUp -= 5;
+            if (rsiNow > 55) taUp += 5;
+            if (rsiNow < 45) taUp -= 5;
+            if (macd?.hist > 0) taUp += 5;
+            if (macd?.hist < 0) taUp -= 5;
+            if (consec.color === "green") taUp += 3;
+            if (consec.color === "red") taUp -= 3;
 
             ta = {
-                prediction: { upProbability: Math.max(10, Math.min(90, taUp)) },
+                prediction: { upProbability: Math.max(30, Math.min(70, taUp)) },
                 delta: { "1m": delta1m, "5m": delta5m }
             };
         }
@@ -292,67 +347,78 @@ async function runTrade() {
             currentPrice,
             strikePrice,
             ta,
-            expiresInMinutes,
-            orderbook: orderbook ? summarizeOrderBook(orderbook) : null
+            expiresInMinutes
         });
 
         // Log analysis
-        const priceVsStrike = currentPrice > strikePrice ? "ABOVE" : "BELOW";
         const distance = Math.abs(currentPrice - strikePrice).toFixed(2);
+        const direction = prediction.isAboveStrike ? "ABOVE" : "BELOW";
 
-        notify(`📊 BTC: $${currentPrice.toFixed(2)} | Strike: $${strikePrice} | ${priceVsStrike} by $${distance}`);
-        notify(`📈 Prediction: ${prediction.side.toUpperCase()} with ${prediction.confidence}% confidence`);
-        notify(`⏰ Expires in ${expiresInMinutes} minutes`);
+        notify(`📊 BTC: $${currentPrice.toFixed(2)} | Strike: $${strikePrice}`);
+        notify(`📍 Price is ${direction} strike by $${distance} (${prediction.priceDistancePct}%)`);
+        notify(`🎯 Prediction: BUY ${prediction.side.toUpperCase()} @ ${prediction.confidence}% confidence`);
+        notify(`⏰ Market expires in ${expiresInMinutes} minutes`);
 
-        // Check if we should trade
+        // Validate prediction makes sense
+        if (!prediction.side) {
+            notify("❌ Could not determine side. Skipping.");
+            return;
+        }
+
+        // Check minimum confidence
         if (prediction.confidence < TRADE_CONFIG.minConfidence) {
-            notify(`⚠️ Confidence too low (${prediction.confidence}% < ${TRADE_CONFIG.minConfidence}%). Skipping trade.`);
+            notify(`⚠️ Confidence too low (${prediction.confidence}% < ${TRADE_CONFIG.minConfidence}%). Skipping.`);
             return;
         }
 
-        // Get execution price (use ask for guaranteed fill)
-        const price = prediction.side === "yes" ? bestMarket.yes_ask : bestMarket.no_ask;
+        // Get the ask price for our side
+        const askPrice = prediction.side === "yes" ? bestMarket.yes_ask : bestMarket.no_ask;
 
-        if (!price || price > 95) {
-            notify(`⚠️ Price unavailable or too high (${price}¢). Skipping.`);
+        if (!askPrice || askPrice >= 95) {
+            notify(`⚠️ Ask price too high or unavailable (${askPrice}¢). Skipping.`);
             return;
         }
 
-        // Place order
-        notify(`🚀 Placing order: BUY ${prediction.side.toUpperCase()} @ ${price}¢ x ${TRADE_CONFIG.contractCount}`);
+        // Place the order
+        const orderType = TRADE_CONFIG.useMarketOrder ? "MARKET" : "LIMIT";
+        notify(`🚀 Placing ${orderType} order: BUY ${prediction.side.toUpperCase()} x ${TRADE_CONFIG.contractCount}`);
+        notify(`   Ticker: ${bestMarket.ticker}`);
 
         const result = await placeOrder({
             ticker: bestMarket.ticker,
             side: prediction.side,
             count: TRADE_CONFIG.contractCount,
-            price
+            price: askPrice
         });
 
         if (result.success) {
-            notify(`✅ ORDER FILLED! ${bestMarket.ticker} ${prediction.side.toUpperCase()} @ ${price}¢ x ${TRADE_CONFIG.contractCount}`);
-            notify(`💰 Cost: $${(price * TRADE_CONFIG.contractCount / 100).toFixed(2)}`);
+            const cost = (askPrice * TRADE_CONFIG.contractCount / 100).toFixed(2);
+            notify(`✅ ORDER FILLED!`);
+            notify(`   ${bestMarket.ticker}`);
+            notify(`   ${prediction.side.toUpperCase()} x ${TRADE_CONFIG.contractCount} @ ~${askPrice}¢`);
+            notify(`   Cost: ~$${cost}`);
+            notify(`   Expires: ${expiresInMinutes} min`);
         } else {
             notify(`❌ Order failed: ${result.error}`);
         }
 
     } catch (err) {
         notify(`❌ Error: ${err.message}`);
+        console.error(err);
     }
 }
 
 // ============================================
-// SCHEDULER
+// SCHEDULER (FIXED - uses setInterval for reliability)
 // ============================================
 function getNextRunTime() {
     const now = new Date();
     const next = new Date(now);
 
-    // Set to target minute
     next.setMinutes(TRADE_CONFIG.runAtMinute);
     next.setSeconds(0);
     next.setMilliseconds(0);
 
-    // If we've passed this minute, go to next hour
     if (next <= now) {
         next.setHours(next.getHours() + 1);
     }
@@ -361,24 +427,35 @@ function getNextRunTime() {
 }
 
 function startDaemon() {
-    notify(`🤖 Kalshi Auto-Trader started`);
-    notify(`📅 Will run at :${TRADE_CONFIG.runAtMinute} of each hour`);
-    notify(`💵 Trading ${TRADE_CONFIG.contractCount} contracts per trade`);
+    notify(`🤖 Kalshi Auto-Trader v2 started`);
+    notify(`📅 Runs at :${TRADE_CONFIG.runAtMinute} each hour`);
+    notify(`💵 Trading ${TRADE_CONFIG.contractCount} contracts/trade`);
     notify(`🎯 Min confidence: ${TRADE_CONFIG.minConfidence}%`);
+    notify(`📦 Order type: ${TRADE_CONFIG.useMarketOrder ? "MARKET" : "LIMIT"}`);
 
-    const scheduleNext = () => {
-        const next = getNextRunTime();
-        const delay = next.getTime() - Date.now();
+    // FIX #5: Check every minute instead of using long setTimeout
+    // This prevents timer drift and handles system sleep better
+    const checkAndRun = async () => {
+        const now = new Date();
+        const minute = now.getMinutes();
+        const second = now.getSeconds();
 
-        notify(`⏳ Next run at ${next.toLocaleTimeString()} (in ${Math.round(delay / 60000)} minutes)`);
-
-        setTimeout(async () => {
+        // Run if we're at the target minute (within first 5 seconds)
+        if (minute === TRADE_CONFIG.runAtMinute && second < 5) {
             await runTrade();
-            scheduleNext();  // Schedule next run
-        }, delay);
+        }
     };
 
-    scheduleNext();
+    // Initial status
+    const next = getNextRunTime();
+    const delay = Math.round((next.getTime() - Date.now()) / 60000);
+    notify(`⏳ Next run at ${next.toLocaleTimeString()} (in ${delay} min)`);
+
+    // Check every minute
+    setInterval(checkAndRun, 60000);
+
+    // Also check immediately in case we started at the right minute
+    checkAndRun();
 }
 
 // ============================================
@@ -389,7 +466,6 @@ const args = process.argv.slice(2);
 if (args.includes("--daemon")) {
     startDaemon();
 } else {
-    // Single run
     runTrade().then(() => {
         if (!args.includes("--no-exit")) {
             process.exit(0);
