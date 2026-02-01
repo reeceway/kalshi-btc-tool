@@ -93,9 +93,8 @@ async function placeOrder({ ticker, side, count, price }, retryCount = 0) {
 
     const path = "/trade-api/v2/portfolio/orders";
 
-    // Kalshi requires a price even for "market-like" orders
-    // Use limit order with aggressive price for fast fill
-    const aggressivePrice = Math.min(99, price + 3);  // Pay up to 3¢ more for guaranteed fill
+    // Use limit order just slightly above ask for fast fill without overpaying
+    const fillPrice = Math.min(99, price + 1);  // Only +1¢ buffer
 
     const orderBody = {
         ticker,
@@ -107,9 +106,9 @@ async function placeOrder({ ticker, side, count, price }, retryCount = 0) {
 
     // Must provide exactly one price field
     if (side === "yes") {
-        orderBody.yes_price = aggressivePrice;
+        orderBody.yes_price = fillPrice;
     } else {
-        orderBody.no_price = aggressivePrice;
+        orderBody.no_price = fillPrice;
     }
 
     const body = JSON.stringify(orderBody);
