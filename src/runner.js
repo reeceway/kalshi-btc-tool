@@ -30,11 +30,12 @@ import * as crypto from "crypto";
 // CONFIGURATION
 // ============================================
 const TRADE_CONFIG = {
-    contractCount: 10,           // Number of contracts per trade
+    positionSizePct: 10,         // Position size as % of portfolio (10% = safe)
+    minContracts: 1,             // Minimum contracts per trade
+    maxContracts: 100,           // Maximum contracts per trade
     runAtMinute: 54,             // Run at :54 of each hour (6 min before settlement)
-    minConfidence: 50,           // Minimum confidence to trade (lowered for testing)
-    useMarketOrder: true,        // FIX #1: Use market orders for guaranteed fill
-    maxRetries: 2,               // FIX #2: Retry failed API calls
+    minConfidence: 55,           // Minimum confidence to trade
+    maxRetries: 2,               // Retry failed API calls
     notifyWebhook: process.env.NOTIFY_WEBHOOK || null,
     logFile: "./trades.log"
 };
@@ -173,6 +174,63 @@ async function placeOrder({ ticker, side, count, price }, retryCount = 0) {
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ============================================
+// FETCH PORTFOLIO BALANCE
+// ============================================
+async function fetchBalance() {
+    const auth = getKalshiAuth();
+    if (!auth) {
+        return null;
+    }
+
+    const path = "/trade-api/v2/portfolio/balance";
+    const headers = signRequest("GET", path, auth);
+
+    return new Promise((resolve) => {
+        const req = https.request({
+            hostname: "api.elections.kalshi.com",
+            port: 443,
+            path,
+            method: "GET",
+            headers,
+            timeout: 10000
+        }, (res) => {
+            let data = "";
+            res.on("data", chunk => data += chunk);
+            res.on("end", () => {
+                try {
+                    const json = JSON.parse(data);
+                    // Balance is in cents, convert to dollars
+                    resolve(json.balance ? json.balance / 100 : null);
+                } catch (e) {
+                    resolve(null);
+                }
+            });
+        });
+        req.on("error", () => resolve(null));
+        req.end();
+    });
+}
+
+/**
+ * Calculate position size based on portfolio balance
+ * @param {number} balanceDollars - Portfolio balance in dollars
+ * @param {number} pricePerContract - Price per contract in cents
+ * @returns {number} Number of contracts to buy
+ */
+function calculatePositionSize(balanceDollars, pricePerContract) {
+    if (!balanceDollars || !pricePerContract) return TRADE_CONFIG.minContracts;
+
+    // Calculate 10% of portfolio in cents
+    const maxSpendCents = balanceDollars * 100 * (TRADE_CONFIG.positionSizePct / 100);
+
+    // How many contracts can we buy?
+    const contracts = Math.floor(maxSpendCents / pricePerContract);
+
+    // Clamp to min/max
+    return Math.max(TRADE_CONFIG.minContracts, Math.min(TRADE_CONFIG.maxContracts, contracts));
 }
 
 // ============================================
@@ -384,24 +442,35 @@ async function runTrade() {
             return;
         }
 
+        // Fetch portfolio balance and calculate position size
+        const balance = await fetchBalance();
+        if (!balance) {
+            notify("❌ Could not fetch portfolio balance. Skipping.");
+            return;
+        }
+
+        const contractCount = calculatePositionSize(balance, askPrice);
+        const estimatedCost = (askPrice * contractCount / 100).toFixed(2);
+        const pctOfPortfolio = ((askPrice * contractCount / 100) / balance * 100).toFixed(1);
+
+        notify(`💰 Portfolio: $${balance.toFixed(2)} | Sizing: ${TRADE_CONFIG.positionSizePct}% = ${contractCount} contracts`);
+
         // Place the order
-        const orderType = TRADE_CONFIG.useMarketOrder ? "MARKET" : "LIMIT";
-        notify(`🚀 Placing ${orderType} order: BUY ${prediction.side.toUpperCase()} x ${TRADE_CONFIG.contractCount}`);
+        notify(`🚀 Placing order: BUY ${prediction.side.toUpperCase()} x ${contractCount}`);
         notify(`   Ticker: ${bestMarket.ticker}`);
 
         const result = await placeOrder({
             ticker: bestMarket.ticker,
             side: prediction.side,
-            count: TRADE_CONFIG.contractCount,
+            count: contractCount,
             price: askPrice
         });
 
         if (result.success) {
-            const cost = (askPrice * TRADE_CONFIG.contractCount / 100).toFixed(2);
             notify(`✅ ORDER FILLED!`);
             notify(`   ${bestMarket.ticker}`);
-            notify(`   ${prediction.side.toUpperCase()} x ${TRADE_CONFIG.contractCount} @ ~${askPrice}¢`);
-            notify(`   Cost: ~$${cost}`);
+            notify(`   ${prediction.side.toUpperCase()} x ${contractCount} @ ~${askPrice}¢`);
+            notify(`   Cost: ~$${estimatedCost} (${pctOfPortfolio}% of portfolio)`);
             notify(`   Expires: ${expiresInMinutes} min`);
         } else {
             notify(`❌ Order failed: ${result.error}`);
@@ -434,9 +503,8 @@ function getNextRunTime() {
 function startDaemon() {
     notify(`🤖 Kalshi Auto-Trader v2 started`);
     notify(`📅 Runs at :${TRADE_CONFIG.runAtMinute} each hour`);
-    notify(`💵 Trading ${TRADE_CONFIG.contractCount} contracts/trade`);
+    notify(`💵 Position sizing: ${TRADE_CONFIG.positionSizePct}% of portfolio`);
     notify(`🎯 Min confidence: ${TRADE_CONFIG.minConfidence}%`);
-    notify(`📦 Order type: ${TRADE_CONFIG.useMarketOrder ? "MARKET" : "LIMIT"}`);
 
     // FIX #5: Check every minute instead of using long setTimeout
     // This prevents timer drift and handles system sleep better
