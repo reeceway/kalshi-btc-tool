@@ -521,12 +521,13 @@ async function runTrade() {
 
         notify(`📊 Market odds: ${marketProb}% | Our calc: ${ourProb}% | Edge: ${edge > 0 ? '+' : ''}${edge}%`);
 
-        if (edge < TRADE_CONFIG.minEdge) {
-            notify(`⚠️ Edge too low (${edge}% < ${TRADE_CONFIG.minEdge}%). Market already priced correctly. Skipping.`);
-            return;
+        // REMOVED: Edge requirement - trade regardless of market pricing
+        // Trust our prediction, not the market
+        if (edge > 0) {
+            notify(`✅ Positive edge: +${edge}%`);
+        } else {
+            notify(`📉 Negative edge: ${edge}% (trading anyway!)`);
         }
-
-        notify(`✅ Found ${edge}% edge! Market underpriced.`);
 
         // Balance already fetched in parallel above - check it's valid
         if (!balance) {
