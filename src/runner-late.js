@@ -48,7 +48,7 @@ const TRADE_CONFIG = {
     positionSizePct: 10,         // Position size as % of portfolio
     minContracts: 1,             // Minimum contracts per trade
     maxContracts: 100,           // Maximum contracts per trade
-    runAtMinute: 58,             // Run at :54 of each hour (6 min before settlement)
+    runAtMinute: 50,             // Run at :54 of each hour (6 min before settlement)
     minConfidence: 50,           // Minimum confidence to trade
     minEdge: 0,                  // Minimum edge vs market (0 = trade if any edge)
 
@@ -506,7 +506,7 @@ async function runTrade() {
         // Get the ask price for our side (market's implied probability)
         const askPrice = prediction.side === "yes" ? bestMarket.yes_ask : bestMarket.no_ask;
 
-        if (!askPrice || askPrice >= 99) {
+        if (!askPrice || askPrice >= 100) {
             notify(`⚠️ Ask price too high or unavailable (${askPrice}¢). Skipping.`);
             return;
         }

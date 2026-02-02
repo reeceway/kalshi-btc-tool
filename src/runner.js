@@ -506,7 +506,7 @@ async function runTrade() {
         // Get the ask price for our side (market's implied probability)
         const askPrice = prediction.side === "yes" ? bestMarket.yes_ask : bestMarket.no_ask;
 
-        if (!askPrice || askPrice >= 99) {
+        if (!askPrice || askPrice >= 100) {
             notify(`⚠️ Ask price too high or unavailable (${askPrice}¢). Skipping.`);
             return;
         }

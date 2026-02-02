@@ -3,3 +3,26 @@
 [2026-02-02T02:14:30.795Z] 💵 Position sizing: 10% of portfolio
 [2026-02-02T02:14:30.795Z] 🎯 Min confidence: 50%
 [2026-02-02T02:14:30.804Z] ⏳ Next run at 9:58:00 PM (in 43 min)
+[2026-02-02T02:17:03.456Z] 🤖 Kalshi Auto-Trader v2 started
+[2026-02-02T02:17:03.464Z] 📅 Runs at :58 each hour
+[2026-02-02T02:17:03.464Z] 💵 Position sizing: 10% of portfolio
+[2026-02-02T02:17:03.464Z] 🎯 Min confidence: 50%
+[2026-02-02T02:17:03.514Z] ⏳ Next run at 9:58:00 PM (in 41 min)
+[2026-02-02T02:55:28.906Z] 🤖 Kalshi Auto-Trader v2 started
+[2026-02-02T02:55:28.913Z] 📅 Runs at :58 each hour
+[2026-02-02T02:55:28.913Z] 💵 Position sizing: 10% of portfolio
+[2026-02-02T02:55:28.913Z] 🎯 Min confidence: 50%
+[2026-02-02T02:55:28.967Z] ⏳ Next run at 9:58:00 PM (in 3 min)
+[2026-02-02T02:58:00.113Z] ⏰ Triggered at 9:58:00 PM
+[2026-02-02T02:58:00.115Z] 🔍 Fetching market data...
+[2026-02-02T02:58:00.298Z] ⚡ Data fetched in 182ms
+[2026-02-02T02:58:00.299Z] 📊 BTC: $76528.65 | Strike: $77249.99
+[2026-02-02T02:58:00.299Z] 📍 Price is BELOW strike by $721.34 (0.934%)
+[2026-02-02T02:58:00.299Z] 🎯 Prediction: BUY NO @ 95% confidence
+[2026-02-02T02:58:00.299Z] ⏰ Market expires in 2 minutes
+[2026-02-02T02:58:00.299Z] ⚠️ Ask price too high or unavailable (100¢). Skipping.
+[2026-02-02T03:01:28.379Z] 🤖 Kalshi Auto-Trader v2 started
+[2026-02-02T03:01:28.382Z] 📅 Runs at :50 each hour
+[2026-02-02T03:01:28.382Z] 💵 Position sizing: 10% of portfolio
+[2026-02-02T03:01:28.382Z] 🎯 Min confidence: 50%
+[2026-02-02T03:01:28.391Z] ⏳ Next run at 10:50:00 PM (in 49 min)
