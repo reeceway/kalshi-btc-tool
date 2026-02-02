@@ -53,9 +53,9 @@ const TRADE_CONFIG = {
     minEdge: 0,                  // Minimum edge vs market (0 = trade if any edge)
 
     // ACCURACY IMPROVEMENTS
-    coinFlipThreshold: 30,       // Skip if price within $X of strike (coin flip)
+    coinFlipThreshold: 20,       // Skip if price within $X of strike (lowered for more trades)
     momentumPenalty: 10,         // Reduce confidence by X% if momentum against us
-    maxVolatility: 0.5,          // Skip if 5-min volatility > X% (0.5 = 0.5%)
+    maxVolatility: 0.8,          // Skip if 5-min volatility > X% (raised for more trades)
 
     maxRetries: 2,
     notifyWebhook: process.env.NOTIFY_WEBHOOK || null,
@@ -506,7 +506,7 @@ async function runTrade() {
         // Get the ask price for our side (market's implied probability)
         const askPrice = prediction.side === "yes" ? bestMarket.yes_ask : bestMarket.no_ask;
 
-        if (!askPrice || askPrice >= 95) {
+        if (!askPrice || askPrice >= 99) {
             notify(`⚠️ Ask price too high or unavailable (${askPrice}¢). Skipping.`);
             return;
         }
